@@ -125,7 +125,8 @@ class S3Client(FileSystem):
 
         s3key = s3_bucket.get_key(key)
         if s3key is None and create_if_none:
-            s3key = s3_bucket.new_key(key)
+            s3key = Key(s3_bucket)
+            s3key.key = key
         return s3key
 
     def put(self, local_path, destination_s3_path, **kwargs):
@@ -164,6 +165,7 @@ class S3Client(FileSystem):
 
         return False
 
+    # TODO : check that scheme is s3 (and/or support http/s)
     def _path_to_bucket_and_key(self, path):
         (scheme, netloc, path, query, fragment) = urlparse.urlsplit(path)
         path_without_initial_slash = path[1:]
@@ -195,7 +197,7 @@ class AtomicS3File(file):
         super(AtomicS3File, self).close()
 
         # store the contents in S3
-        self.s3_client.put(self.path, self.__tmp_path, **self.kwargs)
+        self.s3_client.put(self.__tmp_path, self.path, **self.kwargs)
 
     def __del__(self):
         # remove the temporary directory
