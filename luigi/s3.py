@@ -180,10 +180,8 @@ class AtomicS3File(file):
     An S3 file that writes to a temp file and put to S3 on close.
     """
     def __init__(self, path, s3_client, **kwargs):
-        if tmp_file_path is None:
-            tmp_file_path = os.path.join(tempfile.gettempdir(),
+        self.__tmp_path = os.path.join(tempfile.gettempdir(),
                          'luigi-s3-tmp-%09d' % random.randrange(0, 1e10))
-        self.__tmp_path = tmp_file_path
 
         self.path = path
         self.s3_client = s3_client
