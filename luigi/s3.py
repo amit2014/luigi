@@ -42,6 +42,9 @@ class InvalidDeleteException(FileSystemException):
 class FileNotFoundException(FileSystemException):
     pass
 
+class UnsupportedSchemeException(Exception):
+    pass
+
 class S3Client(FileSystem):
     """
     boto-powered S3 client.
@@ -165,9 +168,11 @@ class S3Client(FileSystem):
 
         return False
 
-    # TODO : check that scheme is s3 (and/or support http/s)
     def _path_to_bucket_and_key(self, path):
         (scheme, netloc, path, query, fragment) = urlparse.urlsplit(path)
+        if not "s3" == scheme.lower():
+            raise UnsupportedSchemeException("'%(scheme)s' is not a currently supported scheme (from path: %(path)s)."
+                                             % {"scheme":scheme, "path":path})
         path_without_initial_slash = path[1:]
         return netloc, path_without_initial_slash
     
