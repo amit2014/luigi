@@ -194,7 +194,7 @@ class AtomicS3File(file):
         self.s3_client = s3_client
         self.kwargs = kwargs
         super(AtomicS3File, self).__init__(self.__tmp_path, 'w')
-    
+
     def close(self):
         """
         Close the file.
@@ -295,11 +295,19 @@ class S3Target(FileSystemTarget):
         if mode == 'r':
             s3_key = self.fs.get_key(self.path)
             if s3_key:
-                return ReadableS3File(s3_key)
+                f = ReadableS3File(s3_key)
+                if self.format:
+                    return self.format.pipe_reader(f)
+                else:
+                    return f
             else:
                 raise FileNotFoundException("Could not find file at %s" % self.path)
         else:
-            return AtomicS3File(self.path, self.fs, **self.kwargs)
+            f = AtomicS3File(self.path, self.fs, **self.kwargs)
+            if self.format:
+                return self.format.pipe_writer(f)
+            else:
+                return f
 
 class S3PathTask(ExternalTask):
     """
