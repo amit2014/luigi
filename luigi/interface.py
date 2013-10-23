@@ -44,6 +44,7 @@ def setup_interface_logging():
 
     logger.addHandler(streamHandler)
     setup_interface_logging.has_run = True
+    setattr(setup_interface_logging, "has_run", True)
 
 
 def get_config():
