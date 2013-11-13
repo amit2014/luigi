@@ -168,6 +168,10 @@ class S3Client(FileSystem):
 
         return False
 
+    def copy_key(self, ky, dst_path, **kwargs):
+        (dst_bucket, dst_key) = self._path_to_bucket_and_key(dst_path)
+        ky.copy(dst_bucket, dst_key, **kwargs)
+
     def list_keys(self, url, include_sub_folders=False, keys_only=False):
         """
         Return the list of keys below the provided URL.
