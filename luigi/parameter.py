@@ -167,3 +167,27 @@ class DateIntervalParameter(Parameter):
                 return i
         else:
             raise ValueError('Invalid date interval - could not be parsed')
+
+
+class TimeDeltaParameter(Parameter):
+    # Class that maps to timedelta using strings of the form  (n {w[eek[s]]|d[ay[s]]|h[our[s]]|m[inute[s]]})+
+
+    def parse(self, input):
+
+        from datetime import timedelta
+        import re
+
+        keys = ["weeks", "days", "hours", "minutes"]
+        regex = "".join(["((?P<%s>\d+) ?%s(%s)?(%s)? ?)?" % (k, k[0], k[1:-1], k[-1]) for k in keys])
+        kwargs = {}
+        has_val = False
+        for k,v in re.match(regex, input).groupdict(default="0").items():
+            val = int(v)
+            has_val = has_val or val != 0
+            kwargs[k] = val
+
+        if has_val:
+            return timedelta(**kwargs)
+        else:
+            raise ValueError("Invalid time delta - could not parse %s" % input)
+
