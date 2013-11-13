@@ -52,9 +52,9 @@ class S3Client(FileSystem):
         
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None):
         if not aws_access_key_id:
-            aws_access_key_id = configuration.get_config().get('s3', 'aws_access_key_id')
+            aws_access_key_id = configuration.get_config().get('s3', 'aws_access_key_id', os.getenv('S3_ACCESS_KEY_ID'))
         if not aws_secret_access_key:
-            aws_secret_access_key = configuration.get_config().get('s3', 'aws_secret_access_key')
+            aws_secret_access_key = configuration.get_config().get('s3', 'aws_secret_access_key', os.getenv('S3_SECRET_ACCESS_KEY'))
         
         self.s3 = S3Connection(aws_access_key_id,
                                aws_secret_access_key,
@@ -167,6 +167,22 @@ class S3Client(FileSystem):
             return True
 
         return False
+
+    def list_keys(self, url, include_sub_folders=False, keys_only=False):
+        """
+        Return the list of keys below the provided URL.
+        """
+        (bucket, ky) = self._path_to_bucket_and_key(url)
+
+        # grab and validate the bucket
+        s3_bucket = self.s3.get_bucket(bucket, validate=True)
+
+        # This is actually useful, hence commented out.
+        # assert not self._is_root(key), "Removing cruft from the root folder is not supported."
+
+        ky_list = s3_bucket.list(ky, "") if include_sub_folders else s3_bucket.list(self._add_path_delimiter(ky), "/")
+        # if keys_only then exclude Prefix objects
+        return ky_list if not keys_only else [ky for ky in ky_list if type(ky) == Key]
 
     def _path_to_bucket_and_key(self, path):
         (scheme, netloc, path, query, fragment) = urlparse.urlsplit(path)
