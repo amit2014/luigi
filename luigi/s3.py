@@ -329,6 +329,18 @@ class S3Target(FileSystemTarget):
             else:
                 return f
 
+    def updated_at(self):
+        """Determine modification time of the target
+
+        :return UTC datetime or None if target does not exist.
+        :rtype datetime
+        """
+        s3_key = self.fs.get_key(self.path)
+        if s3_key:
+            return s3_key.last_modified
+        else:
+            return None
+
 class S3PathTask(ExternalTask):
     """
     A external task that to require existence of
