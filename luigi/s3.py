@@ -18,6 +18,7 @@ import os.path
 import random
 import tempfile
 import urlparse
+import dateutil.parser
 
 from boto.s3.connection import S3Connection
 from boto.s3.key import Key
@@ -337,7 +338,7 @@ class S3Target(FileSystemTarget):
         """
         s3_key = self.fs.get_key(self.path)
         if s3_key:
-            return s3_key.last_modified
+            return dateutil.parser.parse(s3_key.last_modified)
         else:
             return None
 
