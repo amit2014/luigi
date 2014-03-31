@@ -2,9 +2,11 @@ import unittest
 import luigi
 import luigi.notifications
 import datetime
+import pickle
 from luigi.parameter import MissingParameterException
 luigi.notifications.DEBUG = True
-from luigi.util import inherits, common_params
+from luigi.util import inherits, common_params, requires, copies, delegates
+from luigi.mock import MockFile
 
 class A(luigi.Task):
     param1 = luigi.Parameter("class A-specific default")
@@ -68,6 +70,9 @@ class InheritTest(unittest.TestCase):
 
     def test_removing_parameter(self):
         self.assertFalse("param1" in dict(self.d_null.get_params()).keys())
+
+    def test_wrapper_preserve_attributes(self):
+        self.assertEquals(B.__name__, 'B')
 
 class F(luigi.Task):
     param1 = luigi.Parameter("A parameter on a base task, that will be required later.")
@@ -177,6 +182,124 @@ class RequiresTest(unittest.TestCase):
         self.assertRaises(AssertionError, self.k_wrongparamsorder.requires)
 
 
+class X(luigi.Task):
+    n = luigi.IntParameter(default=42)
+
+@inherits(X)
+class Y(luigi.Task):
+    def requires(self):
+        return self.clone_parent()
+
+@requires(X)
+class Y2(luigi.Task):
+    pass
+
+@inherits(X)
+class Z(luigi.Task):
+    n = None
+    def requires(self):
+        return self.clone_parent()
+
+@requires(X)
+class Y3(luigi.Task):
+    n = luigi.IntParameter(default=43)
+
+class CloneParentTest(unittest.TestCase):
+    def test_clone_parent(self):
+        y = Y()
+        x = X()
+        self.assertEqual(y.requires(), x)
+        self.assertEqual(y.n, 42)
+
+        z = Z()
+        self.assertEqual(z.requires(), x)
+
+    def test_requires(self):
+        y2 = Y2()
+        x = X()
+        self.assertEqual(y2.requires(), x)
+        self.assertEqual(y2.n, 42)
+
+    def test_requires_override_default(self):
+        y3 = Y3()
+        x = X()
+        self.assertNotEqual(y3.requires(), x)
+        self.assertEqual(y3.n, 43)
+        self.assertEqual(y3.requires().n, 43)
+
+    def test_names(self):
+        # Just make sure the decorators retain the original class names
+        x = X()
+        self.assertEqual(str(x), 'X(n=42)')
+        self.assertEqual(x.__class__.__name__, 'X')
+
+
+class P(luigi.Task):
+    date = luigi.DateParameter()
+
+    def output(self):
+        return MockFile(self.date.strftime('/tmp/data-%Y-%m-%d.txt'))
+
+    def run(self):
+        f = self.output().open('w')
+        print >>f, 'hello, world'
+        f.close()
+
+
+@copies(P)
+class PCopy(luigi.Task):
+    def output(self):
+        return MockFile(self.date.strftime('/tmp/copy-data-%Y-%m-%d.txt'))
+
+class CopyTest(unittest.TestCase):
+    def test_copy(self):
+        luigi.build([PCopy(date=datetime.date(2012, 1, 1))], local_scheduler=True)
+        self.assertEqual(MockFile._file_contents['/tmp/data-2012-01-01.txt'], 'hello, world\n')
+        self.assertEqual(MockFile._file_contents['/tmp/copy-data-2012-01-01.txt'], 'hello, world\n')
+
+
+class PickleTest(unittest.TestCase):
+    def test_pickle(self):
+        # similar to CopyTest.test_copy
+        p = PCopy(date=datetime.date(2013, 1, 1))
+        p_pickled = pickle.dumps(p)
+        p = pickle.loads(p_pickled)
+
+        luigi.build([p], local_scheduler=True)
+        self.assertEqual(MockFile._file_contents['/tmp/data-2013-01-01.txt'], 'hello, world\n')
+        self.assertEqual(MockFile._file_contents['/tmp/copy-data-2013-01-01.txt'], 'hello, world\n')
+
+
+class Subtask(luigi.Task):
+    k = luigi.IntParameter()
+
+    def f(self, x):
+        return x ** self.k
+
+@delegates
+class SubtaskDelegator(luigi.Task):
+    def subtasks(self):
+        return [Subtask(1), Subtask(2)]
+
+    def run(self):
+        self.s = 0
+        for t in self.subtasks():
+            self.s += t.f(42)
+
+
+class SubtaskTest(unittest.TestCase):
+    def test_subtasks(self):
+        sd = SubtaskDelegator()
+        luigi.build([sd], local_scheduler=True)
+        self.assertEqual(sd.s, 42 * (1 + 42))
+
+    def test_forgot_subtasks(self):
+        def trigger_failure():
+            @delegates
+            class SubtaskDelegatorBroken(luigi.Task):
+                pass
+
+        self.assertRaises(AttributeError, trigger_failure)
 
 
 if __name__ == '__main__':

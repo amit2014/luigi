@@ -46,12 +46,13 @@ luigi_package_data = [os.path.join(dirpath.replace("luigi/", ""), ext)
 
 setup(
     name='luigi',
-    version='1.0.8',
+    version='1.0.13',
     description='Workflow mgmgt + task scheduling + dependency resolution',
     long_description=long_description,
     author='Erik Bernhardsson',
     author_email='erikbern@spotify.com',
     url='https://github.com/spotify/luigi',
+    license='Apache License 2.0',
     packages=[
         'luigi',
         'luigi.contrib',

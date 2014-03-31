@@ -62,6 +62,11 @@ class AggregateArtists(luigi.Task):
                 print >> out_file, artist, count
 ```
 
+Note that this is just a portion of the file *examples/top_artists.py*. In
+particular, `Streams` is defined as a `luigi.Task`, acting as a dependency
+for `AggregateArtists`. In addition, `luigi.run()` is called if the script is
+executed directly, allowing it to be run from the command line.
+
 There are several pieces of this snippet that deserve more explanation.
 
 * Any *Task* may be customized by instantiating one or more *Parameter* objects on the class level.
@@ -211,7 +216,13 @@ Looking at the dependency graph for any of the tasks yields something like this:
 
 In case your job crashes remotely due to any Python exception, Luigi will try to fetch the traceback and print it on standard output. You need [Mechanize](http://wwwsearch.sourceforge.net/mechanize/) for it to work and you also need connectivity to your tasktrackers.
 
-## Conceptual overview
+To run the server as a daemon run:
+
+    PYTHONPATH=. python bin/luigid --background --pidfile <PATH_TO_PIDFILE> --logdir <PATH_TO_LOGDIR> --state-path <PATH_TO_STATEFILE>
+
+Note that this requires python-daemon for this to work.
+
+## Overview
 
 There are two fundamental building blocks of Luigi - the *Task* class and the *Target* class. Both are abstract classes and expect a few methods to be implemented. In addition to those two concepts, the *Parameter* class is an important concept that governs how a Task is run.
 
@@ -248,6 +259,50 @@ print d.date
 
 will return the same date that the object was constructed with. Same goes if you invoke Luigi on the command line.
 
+Tasks are uniquely identified by their class name and values of their parameters. In fact, within the same worker, two tasks of the same class with parameters of the same values are not just equal, but the same instance:
+
+```python
+>>> import luigi
+>>> import datetime
+>>> class DateTask(luigi.Task):
+...   date = luigi.DateParameter()
+... 
+>>> a = datetime.date(2014, 1, 21)
+>>> b = datetime.date(2014, 1, 21)
+>>> a is b
+False
+>>> c = DateTask(date=a)
+>>> d = DateTask(date=b)
+>>> c
+DateTask(date=2014-01-21)
+>>> d
+DateTask(date=2014-01-21)
+>>> c is d
+True
+```
+
+However, if a parameter is created with *significant=False*, it is ignored as far as the Task signature is concerned. Tasks created with only insignificant parameters differing have the same signature, but are not the same instance:
+
+```python
+>>> class DateTask2(DateTask):
+...   other = luigi.Parameter(significant=False)
+... 
+>>> c = DateTask2(date=a, other="foo")
+>>> d = DateTask2(date=b, other="bar")
+>>> c
+DateTask2(date=2014-01-21)
+>>> d
+DateTask2(date=2014-01-21)
+>>> c.other
+'foo'
+>>> d.other
+'bar'
+>>> c is d
+False
+>>> hash(c) == hash(d)
+True
+```
+
 Python is not a typed language and you don't have to specify the types of any of your parameters. You can simply use *luigi.Parameter* if you don't care. In fact, the reason DateParameter et al exist is just in order to support command line interaction and make sure to convert the input to the corresponding type (i.e. datetime.date instead of a string).
 
 
@@ -264,7 +319,8 @@ In this case, the DailyReport task depends on two inputs created earlier, one of
 
 #### Task.output
 
-The *output* method returns one or more Target objects. Similarly to requires, can return wrap them up in any way that's convenient for you. However we strongly recommend that any Task only return one single Target in output.
+The *output* method returns one or more Target objects. Similarly to requires, can return wrap them up in any way that's convenient for you. However we recommend that any Task only return one single Target in output. If multiple outputs are returned, atomicity will be lost unless the Task itself can ensure that the Targets are atomically created. (If atomicity is not of concern, then it is safe to return multiple Target objects.)
+
 
 ```python
 class DailyReport(luigi.Task):
@@ -298,6 +354,32 @@ class FlipLinesBackwards(luigi.Task):
             g.write('%s\n', ''.join(reversed(line.strip().split()))
         g.close() # needed because files are atomic
 ```
+
+
+#### Events and callbacks
+
+Luigi has a built-in event system that allows you to register callbacks to events and trigger them from your own tasks. You can both hook into some pre-defined events and create your own. Each event handle is tied to a Task class, and will be triggered only from that class or a subclass of it. This allows you to effortlessly subscribe to events only from a specific class (e.g. for hadoop jobs).
+
+
+```python
+@luigi.Task.event_handler(luigi.Event.SUCCESS):
+def celebrate_success(self, task):
+    """Will be called directly after a successful execution
+       of `run` on any Task subclass (i.e. all luigi Tasks)
+    """
+    ...
+
+@luigi.hadoop.JobTask.event_handler(luigi.Event.FAILURE):
+def mourn_failure(self, task, exception):
+    """Will be called directly after a failed execution
+       of `run` on any JobTask subclass
+    """
+    ...
+
+luigi.run()
+```
+
+
 
 #### Running from the command line
 
@@ -373,6 +455,46 @@ The central scheduler does not execute anything for you, or help you with job pa
 
 For running tasks periodically, the easiest thing to do is to trigger a Python script from cron or from a continuously running process. There is no central process that automatically triggers job. This model may seem limited, but we believe that it makes things far more intuitive and easy to understand.
 
+## Execution model
+
+Luigi has a quite simple model. The most important aspect is that *no execution is transferred*. When you run a Luigi workflow, the worker schedules all tasks, and also executes the tasks within the process.
+
+The benefit of this scheme is that it's super easy to debug since all execution takes place in the process. It also makes deployment a non-event. During development, you typically run the Luigi workflow from the command line, whereas when you deploy it, you can trigger it using crontab or any other scheduler.
+
+The downside is that Luigi doesn't give you scalability for free, but we think that should really be up to each Task to implement rather than relying on Luigi as a scalability engine. Another downside is that you have to rely on an external scheduler such as crontab to actually trigger the workflows.
+
+Isn't the point of Luigi to automate and schedule these workflows? Not necessarily. Luigi helps you *encode the dependencies* of tasks and build up chains. Furthermore, Luigi's scheduler makes sure that there's centralized view of the dependency graph and that the same job will not be executed by multiple workers simultaneously.
+
+This means that scheduling a complex workflow is fairly trivial using eg. crontab. If you have an external data dump that arrives every day and that your workflow depends on it, you write a workflow that depends on this data dump. Crontab can then trigger this workflow *every minute* to check if the data has arrived. If it has, it will run the full dependency graph.
+
+```python
+class DataDump(luigi.ExternalTask):
+    date = luigi.DateParameter()
+   	def output(self): return luigi.HdfsTarget(self.date.strftime('/var/log/dump/%Y-%m-%d.txt'))
+   	
+class AggregationTask(luigi.Task):
+    date = luigi.DateParameter()
+    window = luigi.IntParameter()
+    def requires(self): return [DataDump(self.date - datetime.timedelta(i)) for i in xrange(self.window)]
+    def run(self): run_some_cool_stuff(self.input())
+    def output(self): return luigi.HdfsTarget('/aggregated-%s-%d' % (self.date, self.window))
+    
+class RunAll(luigi.Task):
+    ''' Dummy task that triggers execution of a other tasks'''
+    def requires(self):
+        for window in [3, 7, 14]:
+            for d in xrange(10): # guarantee that aggregations were run for the past 10 days
+               yield AggregationTask(datetime.date.today() - datetime.timedelta(d), window)
+	
+if __name__ == '__main__':
+    luigi.run(main_task_cls=RunAll)
+```
+
+You can trigger this as much as you want from crontab, and even across multiple machines, because the central scheduler will make sure at most one of each `AggregationTask` task is run simultaneously. Note that this might actually mean multiple tasks can be run because there are instances with different parameters, and this can gives you some form of parallelization (eg. `AggregationTask(2013-01-09)` might run in parallel with `AggregationTask(2013-01-08)`).
+
+Of course, some Task types (eg. `HadoopJobTask`) can transfer execution to other places, but this is up to each Task to define.
+
+
 ## Luigi patterns
 
 ### Code reuse
@@ -403,6 +525,7 @@ All configuration can be done by adding a configuration file named client.cfg to
 
 * *default-scheduler-host* defaults the scheduler to some hostname so that you don't have to provide it as an argument
 * *error-email* makes sure every time things crash, you will get an email (unless it was run on the command line)
+* *luigi-history*, if set, specifies a filename for Luigi to write stuff (currently just job id) to in mapreduce job's output directory. Useful in a configuration where no history is stored in the output directory by Hadoop.
 * If you want to run Hadoop mapreduce jobs in Python, you should also a path to your streaming jar
 * By default, Luigi is configured to work with the CDH4 release of Hadoop.  There are some minor differences with regards to the HDFS CLI in CDH3, CDH4 and the Apache releases of Hadoop.  If you want to use a release other than CDH4, you need to specify which version you are using.
 
@@ -422,14 +545,14 @@ All sections are optional based on what parts of Luigi you are actually using.  
 
 ## More info
 
-Luigi is the sucessor to a couple of attempts that we weren't fully happy with. We learned a lot from our mistakes and some design decisions include:
+Luigi is the successor to a couple of attempts that we weren't fully happy with. We learned a lot from our mistakes and some design decisions include:
 
 * Straightforward command line integration.
 * As little boilerplate as possible.
 * Focus on job scheduling and dependency resolution, not a particular platform. In particular this means no limitation to Hadoop. Though Hadoop/HDFS support is built-in and is easy to use, this is just one of many types of things you can run.
 * A file system abstraction where code doesn't have to care about where files are located.
 * Atomic file system operations through this abstraction. If a task crashes it won't lead to a broken state.
-* The depencies are decentralized. No big config file in XML. Each task just specifies which inputs it needs and cross-module dependencies are trivial.
+* The dependencies are decentralized. No big config file in XML. Each task just specifies which inputs it needs and cross-module dependencies are trivial.
 * A web server that renders the dependency graph and does locking etc for free.
 * Trivial to extend with new file systems, file formats and job types. You can easily write jobs that inserts a Tokyo Cabinet into Cassandra. Adding broad support S3, MySQL or Hive should be a stroll in the park. (Feel free to send us a patch when you're done!)
 * Date algebra included.
@@ -461,4 +584,11 @@ Also it should be mentioned that Luigi is named after the world's second most fa
 ## Want to contribute?
 
 Awesome! Let us know if you have any ideas. Feel free to contact x@y.com where x = luigi and y = spotify.
+
+### Running Unit Tests
+
+1. Install required packages: `pip -r test/requirements.txt`
+1. From the top directory, run [Nose](http://pypi.python.org/pypi/nose/0.11.4): `nosetests`
+    * To run all tests within individual files: `nosetests test/parameter_test.py test/fib_test.py ...`
+    * To run named tests within individual files: `nosetests -m '(testDate.*|testInt)' test/parameter_test.py ...`
 

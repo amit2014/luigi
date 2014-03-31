@@ -12,7 +12,9 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
+import warnings
 import task
+import functools
 
 def common_params(task_instance, task_cls):
     """Grab all the values in task_instance that are found in task_cls"""
@@ -26,8 +28,34 @@ def common_params(task_instance, task_cls):
     vals = dict(task_instance.get_param_values(common_param_vals, [], common_kwargs))
     return vals
 
+
+def class_wraps(P):
+    # In order to make the behavior of a wrapper class nicer, we set the name of the
+    # new class to the wrapped class, and copy over the docstring and module as well.
+    # This makes it possible to pickle the wrapped class etc.
+    # Btw, this is a slight abuse of functools.wraps. It's meant to be used only for
+    # functions, but it works for classes too, if you pass updated=[]
+    return functools.wraps(P, updated=[])
+
+
 class inherits(object):
-    """docstring for inherits"""
+    '''Task inheritance.
+
+    Usage::
+
+        class AnotherTask(luigi.Task):
+            n = luigi.IntParameter()
+            # ...
+
+        @inherits(AnotherTask):
+        class MyTask(luigi.Task):
+            def requires(self):
+               return self.clone_parent()
+
+            def run(self):
+               print self.n # this will be defined
+               # ...
+    '''
     def __init__(self, task_to_inherit):
         super(inherits, self).__init__()
         self.task_to_inherit = task_to_inherit
@@ -38,7 +66,99 @@ class inherits(object):
             if not hasattr(task_that_inherits, param_name):
                 setattr(task_that_inherits, param_name, param_obj)
 
-        return task_that_inherits
+        # Modify task_that_inherits by subclassing it and adding methods
+        @class_wraps(task_that_inherits)
+        class Wrapped(task_that_inherits):
+            def clone_parent(_self, **args):
+                return _self.clone(cls=self.task_to_inherit, **args)
+
+        return Wrapped
+
+
+class requires(object):
+    ''' Same as @inherits, but also auto-defines the requires method
+    '''
+    def __init__(self, task_to_require):
+        super(requires, self).__init__()
+        self.inherit_decorator = inherits(task_to_require)
+
+    def __call__(self, task_that_requires):
+        task_that_requires = self.inherit_decorator(task_that_requires)
+        
+        # Modify task_that_requres by subclassing it and adding methods
+        @class_wraps(task_that_requires)
+        class Wrapped(task_that_requires):
+            def requires(_self):
+                return _self.clone_parent()
+
+        return Wrapped
+
+
+class copies(object):
+    ''' Auto-copies a task
+
+    Usage::
+
+        @copies(MyTask):
+        class CopyOfMyTask(luigi.Task):
+            def output(self):
+               return LocalTarget(self.date.strftime('/var/xyz/report-%Y-%m-%d'))
+    '''
+    def __init__(self, task_to_copy):
+        super(copies, self).__init__()
+        self.requires_decorator = requires(task_to_copy)
+    
+    def __call__(self, task_that_copies):
+        task_that_copies = self.requires_decorator(task_that_copies)
+
+        # Modify task_that_copies by subclassing it and adding methods
+        @class_wraps(task_that_copies)
+        class Wrapped(task_that_copies):
+            def run(_self):
+                i, o = _self.input(), _self.output()
+                f = o.open('w')  # TODO: assert that i, o are Target objects and not complex datastructures
+                for line in i.open('r'):
+                    f.write(line)
+                f.close()
+
+        return Wrapped
+
+def delegates(task_that_delegates):
+    ''' Lets a task call methods on subtask(s).
+
+    The way this works is that the subtask is run as a part of the task, but the task itself doesn't have
+    to care about the requirements of the subtasks. The subtask doesn't exist from the scheduler's point
+    of view, and its dependencies are instead required by the main task.
+
+    Example::
+
+        class PowersOfN(luigi.Task):
+            n = luigi.IntParameter()
+            def f(self, x): return x ** self.n
+
+        @delegates
+        class T(luigi.Task):
+            def subtasks(self): return PowersOfN(5)
+            def run(self): print self.subtasks().f(42)
+    '''
+    if not hasattr(task_that_delegates, 'subtasks'):
+        # This method can (optionally) define a couple of delegate tasks that
+        # will be accessible as interfaces, meaning that the task can access
+        # those tasks and run methods defined on them, etc
+        raise AttributeError('%s needs to implement the method "subtasks"' % task_that_delegates)
+
+    @class_wraps(task_that_delegates)
+    class Wrapped(task_that_delegates):
+        def deps(self):
+            # Overrides method in base class
+            return task.flatten(self.requires()) + task.flatten([t.deps() for t in task.flatten(self.subtasks())])
+        
+        def run(self):
+            for t in task.flatten(self.subtasks()):
+                t.run()
+            task_that_delegates.run(self)
+        
+    return Wrapped
 
 
 def Derived(parent_cls):
@@ -51,17 +171,18 @@ def Derived(parent_cls):
     Note 1: The derived class does not inherit from the parent class
     Note 2: You can add more parameters in the derived class
 
-    Usage:
-    class AnotherTask(luigi.Task):
-        n = luigi.IntParameter()
-        # ...
+    Usage::
 
-    class MyTask(luigi.uti.Derived(AnotherTask)):
-        def requires(self):
-           return self.parent_obj
-        def run(self):
-           print self.n # this will be defined
-           # ...
+        class AnotherTask(luigi.Task):
+            n = luigi.IntParameter()
+            # ...
+
+        class MyTask(luigi.uti.Derived(AnotherTask)):
+            def requires(self):
+               return self.parent_obj
+            def run(self):
+               print self.n # this will be defined
+               # ...
     '''
     class DerivedCls(task.Task):
         def __init__(self, *args, **kwargs):
@@ -77,6 +198,8 @@ def Derived(parent_cls):
             self.parent_obj = parent_cls(**parent_param_values)
             super(DerivedCls, self).__init__(*args, **kwargs)
 
+    warnings.warn('Derived is deprecated, please use the @inherits decorator instead', DeprecationWarning)
+
     # Copy parent's params to child
     for param_name, param_obj in parent_cls.get_params():
         setattr(DerivedCls, param_name, param_obj)
@@ -84,11 +207,13 @@ def Derived(parent_cls):
 
 
 def Copy(parent_cls):
-    ''' Creates a new Task that copies the old task. Usage:
+    ''' Creates a new Task that copies the old task.
 
-    class CopyOfMyTask(Copy(MyTask)):
-        def output(self):
-           return LocalTarget(self.date.strftime('/var/xyz/report-%Y-%m-%d'))
+    Usage::
+
+        class CopyOfMyTask(Copy(MyTask)):
+            def output(self):
+               return LocalTarget(self.date.strftime('/var/xyz/report-%Y-%m-%d'))
     '''
 
     class CopyCls(Derived(parent_cls)):
@@ -103,6 +228,8 @@ def Copy(parent_cls):
             for line in i.open('r'):
                 f.write(line)
             f.close()
+
+    warnings.warn('Copy is deprecated, please use the @copies decorator instead', DeprecationWarning)
     return CopyCls
 
 
@@ -112,6 +239,10 @@ class CompositionTask(task.Task):
     # requires() style dependency is that if X and Y are run in different processes then
     # X can not access Y. To solve this, you can let X own a reference to an Y and have it
     # run it as a part of its own run method.
+
+    def __init__(self, *args, **kwargs):
+        warnings.warn('CompositionTask is deprecated, please use the @delegates decorator instead', DeprecationWarning)
+        super(CompositionTask, self).__init__(*args, **kwargs)
 
     def subtasks(self):
         # This method can (optionally) define a couple of delegate tasks that
