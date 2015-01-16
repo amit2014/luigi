@@ -41,10 +41,21 @@ import contextlib
 
 
 class RemoteContext(object):
-    def __init__(self, host, username=None, key_file=None):
+    def __init__(self, host, username=None, key_file=None, connect_timeout=None):
         self.host = host
         self.username = username
         self.key_file = key_file
+        self.connect_timeout = connect_timeout
+
+    def __repr__(self):
+        return '%s(%r, %r, %r, %r)' % (
+            type(self).__name__, self.host, self.username, self.key_file, self.connect_timeout)
+
+    def __eq__(self, other):
+        return repr(self) == repr(other)
+
+    def __hash__(self):
+        return hash(repr(self))
 
     def _host_ref(self):
         if self.username:
@@ -57,6 +68,9 @@ class RemoteContext(object):
                           "-S", "none",  # disable ControlMaster since it causes all sorts of weird behaviour with subprocesses...
                           "-o", "BatchMode=yes",  # no password prompts etc
                           ]
+
+        if self.connect_timeout is not None:
+            connection_cmd += ['-o', 'ConnectTimeout=%d' % self.connect_timeout]
 
         if self.key_file:
             connection_cmd.extend(["-i", self.key_file])

@@ -7,6 +7,7 @@ from luigi.parameter import MissingParameterException
 luigi.notifications.DEBUG = True
 from luigi.util import inherits, common_params, requires, copies, delegates
 from luigi.mock import MockFile
+from luigi.interface import ArgParseInterface
 
 class A(luigi.Task):
     param1 = luigi.Parameter("class A-specific default")
@@ -72,7 +73,7 @@ class InheritTest(unittest.TestCase):
         self.assertFalse("param1" in dict(self.d_null.get_params()).keys())
 
     def test_wrapper_preserve_attributes(self):
-        self.assertEquals(B.__name__, 'B')
+        self.assertEqual(B.__name__, 'B')
 
 class F(luigi.Task):
     param1 = luigi.Parameter("A parameter on a base task, that will be required later.")
@@ -179,7 +180,7 @@ class RequiresTest(unittest.TestCase):
         k.requires()
 
     def test_wrong_common_params_order(self):
-        self.assertRaises(AssertionError, self.k_wrongparamsorder.requires)
+        self.assertRaises(TypeError, self.k_wrongparamsorder.requires)
 
 
 class X(luigi.Task):
@@ -254,8 +255,8 @@ class PCopy(luigi.Task):
 class CopyTest(unittest.TestCase):
     def test_copy(self):
         luigi.build([PCopy(date=datetime.date(2012, 1, 1))], local_scheduler=True)
-        self.assertEqual(MockFile._file_contents['/tmp/data-2012-01-01.txt'], 'hello, world\n')
-        self.assertEqual(MockFile._file_contents['/tmp/copy-data-2012-01-01.txt'], 'hello, world\n')
+        self.assertEqual(MockFile.fs.get_data('/tmp/data-2012-01-01.txt'), 'hello, world\n')
+        self.assertEqual(MockFile.fs.get_data('/tmp/copy-data-2012-01-01.txt'), 'hello, world\n')
 
 
 class PickleTest(unittest.TestCase):
@@ -266,8 +267,8 @@ class PickleTest(unittest.TestCase):
         p = pickle.loads(p_pickled)
 
         luigi.build([p], local_scheduler=True)
-        self.assertEqual(MockFile._file_contents['/tmp/data-2013-01-01.txt'], 'hello, world\n')
-        self.assertEqual(MockFile._file_contents['/tmp/copy-data-2013-01-01.txt'], 'hello, world\n')
+        self.assertEqual(MockFile.fs.get_data('/tmp/data-2013-01-01.txt'), 'hello, world\n')
+        self.assertEqual(MockFile.fs.get_data('/tmp/copy-data-2013-01-01.txt'), 'hello, world\n')
 
 
 class Subtask(luigi.Task):
@@ -300,6 +301,12 @@ class SubtaskTest(unittest.TestCase):
                 pass
 
         self.assertRaises(AttributeError, trigger_failure)
+
+    def test_cmdline(self):
+        # Exposes issue where wrapped tasks are registered twice under
+        # the same name
+        from luigi.task import Register
+        self.assertEqual(Register.get_reg().get('SubtaskDelegator', None), SubtaskDelegator)
 
 
 if __name__ == '__main__':

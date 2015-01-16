@@ -12,6 +12,9 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 
+import mock
+import os
+import sys
 import unittest
 import subprocess
 import luigi
@@ -100,10 +103,23 @@ class MapOnlyJob(TestJobTask):
     def output(self):
         return File("luigitest-3")
 
+class UnicodeJob(TestJobTask):
+    def mapper(self, line):
+        yield u'test', 1
+        yield 'test', 1
+
+    def reducer(self, word, occurences):
+        yield word, sum(occurences)
+
+    def requires(self):
+        return Words()
+
+    def output(self):
+        return File("luigitest-4")
 
 class HadoopJobTest(unittest.TestCase):
     def setUp(self):
-        MockFile._file_contents = {}
+        MockFile.fs.clear()
 
     def read_output(self, p):
         count = {}
@@ -115,7 +131,7 @@ class HadoopJobTest(unittest.TestCase):
     def test_run(self):
         luigi.build([WordCountJob()], local_scheduler=True)
         c = self.read_output(File('luigitest'))
-        self.assertEquals(int(c['jk']), 6)
+        self.assertEqual(int(c['jk']), 6)
 
     def test_run_2(self):
         luigi.build([WordFreqJob()], local_scheduler=True)
@@ -127,8 +143,20 @@ class HadoopJobTest(unittest.TestCase):
         c = []
         for line in File('luigitest-3').open('r'):
             c.append(line.strip())
-        self.assertEquals(c[0], 'kj')
-        self.assertEquals(c[4], 'ljoi')
+        self.assertEqual(c[0], 'kj')
+        self.assertEqual(c[4], 'ljoi')
+
+    def test_unicode_job(self):
+        luigi.build([UnicodeJob()], local_scheduler=True)
+        c = []
+        for line in File('luigitest-4').open('r'):
+            c.append(line)
+        # Make sure unicode('test') isnt grouped with str('test')
+        # Since this is what happens when running on cluster
+        self.assertEqual(len(c), 2)
+        self.assertEqual(c[0], "test\t2\n")
+        self.assertEqual(c[0], "test\t2\n")
+
 
     def test_run_hadoop_job_failure(self):
         def Popen_fake(arglist, stdout=None, stderr=None, env=None, close_fds=True):
@@ -157,8 +185,8 @@ class HadoopJobTest(unittest.TestCase):
         try:
             luigi.hadoop.run_and_track_hadoop_job([])
         except luigi.hadoop.HadoopJobError as e:
-            self.assertEquals(e.out, 'stdout')
-            self.assertEquals(e.err, 'stderr')
+            self.assertEqual(e.out, 'stdout')
+            self.assertEqual(e.err, 'stderr')
         else:
             self.fail("Should have thrown HadoopJobError")
         finally:
@@ -188,8 +216,8 @@ class HadoopJobTest(unittest.TestCase):
         try:
             MockFile.move = lambda *args, **kwargs: None
             WordCountJobReal().run()
-            self.assertEquals(len(arglist_result), 1)
-            self.assertEquals(arglist_result[0][0:3], ['hadoop', 'jar', 'test.jar'])
+            self.assertEqual(len(arglist_result), 1)
+            self.assertEqual(arglist_result[0][0:3], ['hadoop', 'jar', 'test.jar'])
         finally:
             luigi.hdfs.HdfsTarget, subprocess.Popen = h, p  # restore
 
@@ -231,8 +259,77 @@ class MrrunnerTest(unittest.TestCase):
             output = StringIO.StringIO()
             luigi.mrrunner.main(args=['mrrunner.py', 'map'], stdin=input, stdout=output, print_exception=print_exception)
         self.assertRaises(FailingJobException, run)        
-        self.assertEquals(len(excs), 1) # should have been set
+        self.assertEqual(len(excs), 1) # should have been set
         self.assertTrue(type(excs[0]), FailingJobException)
+
+class CreatePackagesArchive(unittest.TestCase):
+    def setUp(self):
+        sys.path.append(os.path.join('test', 'create_packages_archive_root'))
+
+    def tearDown(self):
+        sys.path.remove(os.path.join('test', 'create_packages_archive_root'))
+
+    def _assert_module(self, add):
+        add.assert_called_once_with('test/create_packages_archive_root/module.py',
+                                    'module.py')
+
+    def _assert_package(self, add):
+        add.assert_any_call('test/create_packages_archive_root/package/__init__.py', 'package/__init__.py')
+        add.assert_any_call('test/create_packages_archive_root/package/submodule.py', 'package/submodule.py')
+        add.assert_any_call('test/create_packages_archive_root/package/submodule_with_absolute_import.py', 'package/submodule_with_absolute_import.py')
+        add.assert_any_call('test/create_packages_archive_root/package/submodule_without_imports.py', 'package/submodule_without_imports.py')
+        add.assert_any_call('test/create_packages_archive_root/package/subpackage/__init__.py', 'package/subpackage/__init__.py')
+        add.assert_any_call('test/create_packages_archive_root/package/subpackage/submodule.py', 'package/subpackage/submodule.py')
+        add.assert_any_call('test/create_packages_archive_root/package.egg-info/top_level.txt', 'package.egg-info/top_level.txt')
+        assert add.call_count == 7
+
+    def _assert_package_subpackage(self, add):
+        add.assert_any_call('test/create_packages_archive_root/package/__init__.py', 'package/__init__.py')
+        add.assert_any_call('test/create_packages_archive_root/package/subpackage/__init__.py', 'package/subpackage/__init__.py')
+        add.assert_any_call('test/create_packages_archive_root/package/subpackage/submodule.py', 'package/subpackage/submodule.py')
+        assert add.call_count == 3
+
+    @mock.patch('tarfile.open')
+    def test_create_packages_archive_module(self, tar):
+        module = __import__("module", None, None, 'dummy')
+        luigi.hadoop.create_packages_archive([module], '/dev/null')
+        self._assert_module(tar.return_value.add)
+
+    @mock.patch('tarfile.open')
+    def test_create_packages_archive_package(self, tar):
+        package = __import__("package", None, None, 'dummy')
+        luigi.hadoop.create_packages_archive([package], '/dev/null')
+        self._assert_package(tar.return_value.add)
+
+    @mock.patch('tarfile.open')
+    def test_create_packages_archive_package_submodule(self, tar):
+        package_submodule = __import__("package.submodule", None, None, 'dummy')
+        luigi.hadoop.create_packages_archive([package_submodule], '/dev/null')
+        self._assert_package(tar.return_value.add)
+
+    @mock.patch('tarfile.open')
+    def test_create_packages_archive_package_submodule_with_absolute_import(self, tar):
+        package_submodule_with_absolute_import = __import__("package.submodule_with_absolute_import", None, None, 'dummy')
+        luigi.hadoop.create_packages_archive([package_submodule_with_absolute_import], '/dev/null')
+        self._assert_package(tar.return_value.add)
+
+    @mock.patch('tarfile.open')
+    def test_create_packages_archive_package_submodule_without_imports(self, tar):
+        package_submodule_without_imports = __import__("package.submodule_without_imports", None, None, 'dummy')
+        luigi.hadoop.create_packages_archive([package_submodule_without_imports], '/dev/null')
+        self._assert_package(tar.return_value.add)
+
+    @mock.patch('tarfile.open')
+    def test_create_packages_archive_package_subpackage(self, tar):
+        package_subpackage = __import__("package.subpackage", None, None, 'dummy')
+        luigi.hadoop.create_packages_archive([package_subpackage], '/dev/null')
+        self._assert_package_subpackage(tar.return_value.add)
+
+    @mock.patch('tarfile.open')
+    def test_create_packages_archive_package_subpackage_submodule(self, tar):
+        package_subpackage_submodule = __import__("package.subpackage.submodule", None, None, 'dummy')
+        luigi.hadoop.create_packages_archive([package_subpackage_submodule], '/dev/null')
+        self._assert_package_subpackage(tar.return_value.add)
 
 if __name__ == '__main__':
     HadoopJobTest.test_run_real()

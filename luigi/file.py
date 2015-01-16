@@ -16,6 +16,7 @@ import os
 import random
 import tempfile
 import shutil
+import luigi.util
 from target import FileSystem, FileSystemTarget
 from luigi.format import FileWrapper
 
@@ -101,6 +102,7 @@ class File(FileSystemTarget):
         else:
             raise Exception('mode must be r/w')
 
+    @luigi.util.deprecate_kwarg('fail_if_exists', 'raise_if_exists', False)
     def move(self, new_path, fail_if_exists=False):
         if fail_if_exists and os.path.exists(new_path):
             raise RuntimeError('Destination exists: %s' % new_path)
@@ -115,10 +117,11 @@ class File(FileSystemTarget):
     def remove(self):
         self.fs.remove(self.path)
 
+    @luigi.util.deprecate_kwarg('fail_if_exists', 'raise_if_exists', False)
     def copy(self, new_path, fail_if_exists=False):
         if fail_if_exists and os.path.exists(new_path):
             raise RuntimeError('Destination exists: %s' % new_path)
-        tmp = File(is_tmp=True)
+        tmp = File(new_path + '-luigi-tmp-%09d' % random.randrange(0, 1e10), is_tmp=True)
         tmp.open('w')
         shutil.copy(self.path, tmp.fn)
         tmp.move(new_path)

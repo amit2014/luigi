@@ -13,12 +13,20 @@
 # the License.
 
 import warnings
+import logging
+import datetime
+from luigi import parameter
 import task
 import functools
 
+
+logger = logging.getLogger('luigi-interface')
+
+
 def common_params(task_instance, task_cls):
     """Grab all the values in task_instance that are found in task_cls"""
-    assert isinstance(task_cls, task.Register), "task_cls must be an uninstantiated Task"
+    if not isinstance(task_cls, task.Register):
+        raise TypeError("task_cls must be an uninstantiated Task")
 
     task_instance_param_names = dict(task_instance.get_params()).keys()
     task_cls_param_names = dict(task_cls.get_params()).keys()
@@ -29,7 +37,7 @@ def common_params(task_instance, task_cls):
     return vals
 
 
-def class_wraps(P):
+def task_wraps(P):
     # In order to make the behavior of a wrapper class nicer, we set the name of the
     # new class to the wrapped class, and copy over the docstring and module as well.
     # This makes it possible to pickle the wrapped class etc.
@@ -59,7 +67,7 @@ class inherits(object):
     def __init__(self, task_to_inherit):
         super(inherits, self).__init__()
         self.task_to_inherit = task_to_inherit
-    
+
     def __call__(self, task_that_inherits):
         this_param_names = dict(task_that_inherits.get_nonglobal_params()).keys()
         for param_name, param_obj in self.task_to_inherit.get_params():
@@ -67,7 +75,7 @@ class inherits(object):
                 setattr(task_that_inherits, param_name, param_obj)
 
         # Modify task_that_inherits by subclassing it and adding methods
-        @class_wraps(task_that_inherits)
+        @task_wraps(task_that_inherits)
         class Wrapped(task_that_inherits):
             def clone_parent(_self, **args):
                 return _self.clone(cls=self.task_to_inherit, **args)
@@ -84,9 +92,9 @@ class requires(object):
 
     def __call__(self, task_that_requires):
         task_that_requires = self.inherit_decorator(task_that_requires)
-        
+
         # Modify task_that_requres by subclassing it and adding methods
-        @class_wraps(task_that_requires)
+        @task_wraps(task_that_requires)
         class Wrapped(task_that_requires):
             def requires(_self):
                 return _self.clone_parent()
@@ -107,12 +115,12 @@ class copies(object):
     def __init__(self, task_to_copy):
         super(copies, self).__init__()
         self.requires_decorator = requires(task_to_copy)
-    
+
     def __call__(self, task_that_copies):
         task_that_copies = self.requires_decorator(task_that_copies)
 
         # Modify task_that_copies by subclassing it and adding methods
-        @class_wraps(task_that_copies)
+        @task_wraps(task_that_copies)
         class Wrapped(task_that_copies):
             def run(_self):
                 i, o = _self.input(), _self.output()
@@ -147,17 +155,17 @@ def delegates(task_that_delegates):
         # those tasks and run methods defined on them, etc
         raise AttributeError('%s needs to implement the method "subtasks"' % task_that_delegates)
 
-    @class_wraps(task_that_delegates)
+    @task_wraps(task_that_delegates)
     class Wrapped(task_that_delegates):
         def deps(self):
             # Overrides method in base class
             return task.flatten(self.requires()) + task.flatten([t.deps() for t in task.flatten(self.subtasks())])
-        
+
         def run(self):
             for t in task.flatten(self.subtasks()):
                 t.run()
             task_that_delegates.run(self)
-        
+
     return Wrapped
 
 
@@ -177,7 +185,7 @@ def Derived(parent_cls):
             n = luigi.IntParameter()
             # ...
 
-        class MyTask(luigi.uti.Derived(AnotherTask)):
+        class MyTask(luigi.util.Derived(AnotherTask)):
             def requires(self):
                return self.parent_obj
             def run(self):
@@ -198,7 +206,11 @@ def Derived(parent_cls):
             self.parent_obj = parent_cls(**parent_param_values)
             super(DerivedCls, self).__init__(*args, **kwargs)
 
-    warnings.warn('Derived is deprecated, please use the @inherits decorator instead', DeprecationWarning)
+    warnings.warn(
+        'Derived is deprecated, please use the @inherits decorator instead',
+        DeprecationWarning,
+        stacklevel=2
+    )
 
     # Copy parent's params to child
     for param_name, param_obj in parent_cls.get_params():
@@ -229,7 +241,11 @@ def Copy(parent_cls):
                 f.write(line)
             f.close()
 
-    warnings.warn('Copy is deprecated, please use the @copies decorator instead', DeprecationWarning)
+    warnings.warn(
+        'Copy is deprecated, please use the @copies decorator instead',
+        DeprecationWarning,
+        stacklevel=2
+    )
     return CopyCls
 
 
@@ -262,3 +278,79 @@ class CompositionTask(task.Task):
     # def run(self):
     #    self.run_subtasks()
     #    ...
+
+
+def deprecate_kwarg(old_name, new_name, kw_value):
+    """ Rename keyword arguments, but keep backwards compatibility.
+
+    Usage:
+
+    >>> @deprecate_kwarg('old', 'new', 'defval')
+    ... def some_func(old='defval'):
+    ...     print(old)
+    ...
+    >>> some_func(new='yay')
+    yay
+    >>> some_func(old='yaay')
+    yaay
+    >>> some_func()
+    defval
+
+    """
+    def real_decorator(function):
+        def new_function(*args, **kwargs):
+            value = kw_value
+            if old_name in kwargs:
+                warnings.warn('Keyword argument {0} is deprecated, use {1}'
+                              .format(old_name, new_name))
+                value = kwargs[old_name]
+            if new_name in kwargs:
+                value = kwargs[new_name]
+                del kwargs[new_name]
+            kwargs[old_name] = value
+            return function(*args, **kwargs)
+        return new_function
+    return real_decorator
+
+
+def previous(task):
+    """Return a previous Task of the same family.
+
+    By default checks if this task family only has one non-global parameter and if
+    it is a DateParameter, DateHourParameter or DateIntervalParameter in which case
+    it returns with the time decremented by 1 (hour, day or interval)
+    """
+    params = task.get_nonglobal_params()
+    previous_params = {}
+    previous_date_params = {}
+
+    for param_name, param_obj in params:
+        param_value = getattr(task, param_name)
+
+        if isinstance(param_obj, parameter.DateParameter):
+            previous_date_params[param_name] = param_value - datetime.timedelta(days=1)
+        elif isinstance(param_obj, parameter.DateHourParameter):
+            previous_date_params[param_name] = param_value - datetime.timedelta(hours=1)
+        elif isinstance(param_obj, parameter.DateIntervalParameter):
+            previous_date_params[param_name] = param_value.prev()
+        else:
+            previous_params[param_name] = param_value
+
+    previous_params.update(previous_date_params)
+
+    if len(previous_date_params) == 0:
+        raise NotImplementedError("No task parameter - can't determine previous task")
+    elif len(previous_date_params) > 1:
+        raise NotImplementedError("Too many date-related task parameters - can't determine previous task")
+    else:
+        return task.clone(**previous_params)
+
+
+def get_previous_completed(task, max_steps=10):
+    prev = task
+    for i in xrange(max_steps):
+        prev = previous(prev)
+        logger.debug("Checking if %s is complete" % prev.task_id)
+        if prev.complete():
+            return prev
+    return None

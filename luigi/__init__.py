@@ -20,9 +20,9 @@ import parameter
 import configuration
 import interface
 import target
-import worker
+import event
 
-Event = worker.Event
+Event = event.Event
 
 Task = task.Task
 ExternalTask = task.ExternalTask
@@ -35,8 +35,6 @@ Parameter = parameter.Parameter
 RemoteScheduler = rpc.RemoteScheduler
 RPCError = rpc.RPCError
 
-expose = interface.expose
-expose_main = interface.expose_main
 run = interface.run
 build = interface.build
 
@@ -50,3 +48,5 @@ DateIntervalParameter = parameter.DateIntervalParameter
 TimeDeltaParameter = parameter.TimeDeltaParameter
 
 namespace = task.namespace
+
+import tools.range  # just makes the tool classes available from command line

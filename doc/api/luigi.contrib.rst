@@ -4,6 +4,30 @@ luigi.contrib package
 Submodules
 ----------
 
+luigi.contrib.esindex module
+----------------------------
+
+.. automodule:: luigi.contrib.esindex
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+luigi.contrib.ftp module
+------------------------
+
+.. automodule:: luigi.contrib.ftp
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+luigi.contrib.sqla module
+-------------------------
+
+.. automodule:: luigi.contrib.sqla
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 luigi.contrib.mysqldb module
 ----------------------------
 
@@ -48,6 +72,14 @@ luigi.contrib.ssh module
 ------------------------
 
 .. automodule:: luigi.contrib.ssh
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+luigi.contrib.target module
+---------------------------
+
+.. automodule:: luigi.contrib.target
     :members:
     :undoc-members:
     :show-inheritance:
